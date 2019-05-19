@@ -94,7 +94,6 @@ L.Edit.PolyVerticesEdit = L.Handler.extend({
 			timeout: 1000
 		}
 
-
 	},
 
 	// @method intialize(): void
@@ -110,6 +109,8 @@ L.Edit.PolyVerticesEdit = L.Handler.extend({
 		}
 
 		this._latlngs = latlngs;
+
+		this._polyRTree = null;
 
 		L.setOptions(this, options);
 	},
@@ -159,7 +160,10 @@ L.Edit.PolyVerticesEdit = L.Handler.extend({
 				this._initMarkers();
 			}
 			this._poly._map.addLayer(this._markerGroup);
+
+			this._poly._map.on('mousemove', this._onMouseMove, this);
 		}
+
 	},
 
 	// @method removeHooks(): void
@@ -185,6 +189,7 @@ L.Edit.PolyVerticesEdit = L.Handler.extend({
 
 		if (poly._map) {
 			poly._map.removeLayer(this._markerGroup);
+			this._poly._map.off('mousemove', this._onMouseMove);
 			delete this._markerGroup;
 			delete this._markers;
 		}
@@ -201,20 +206,26 @@ L.Edit.PolyVerticesEdit = L.Handler.extend({
 		if (!this._markerGroup) {
 			this._markerGroup = new L.LayerGroup();
 		}
-		this._markers = [];
+		this._markers = this._markers || [];
 
 		var latlngs = this._defaultShape(),
 			i, j, len, marker;
-
-		for (i = 0, len = latlngs.length; i < len; i++) {
-
-			marker = this._createMarker(latlngs[i], i);
-			marker.on('click', this._onMarkerClick, this);
-			marker.on('contextmenu', this._onContextMenu, this);
-			this._markers.push(marker);
+		var markerLeft, markerRight;
+		
+		if (this.options.markersOnDemand) {
+			this._buildMarkerPool();
+			this._buildRTree();
+		} else {
+			for (i = 0, len = latlngs.length; i < len; i++) {
+	
+				marker = this._createMarker(latlngs[i], i);
+				marker.on('click', this._onMarkerClick, this);
+				marker.on('contextmenu', this._onContextMenu, this);
+				this._markers.push(marker);
+			}
 		}
 
-		var markerLeft, markerRight;
+		len = this._markers.length;
 
 		for (i = 0, j = len - 1; i < len; j = i++) {
 			if (i === 0 && !(L.Polygon && (this._poly instanceof L.Polygon))) {
@@ -253,7 +264,8 @@ L.Edit.PolyVerticesEdit = L.Handler.extend({
 		return marker;
 	},
 
-	_onMarkerDragStart: function () {
+	_onMarkerDragStart: function (e) {
+		e.sourceTarget._origLatLng = e.sourceTarget._latlng;
 		this._poly.fire('editstart');
 	},
 
@@ -380,7 +392,6 @@ L.Edit.PolyVerticesEdit = L.Handler.extend({
 
 	_onContextMenu: function (e) {
 		var marker = e.target;
-		var poly = this._poly;
 		this._poly._map.fire(L.Draw.Event.MARKERCONTEXT, {marker: marker, layers: this._markerGroup, poly: this._poly});
 		L.DomEvent.stopPropagation;
 	},
@@ -487,6 +498,99 @@ L.Edit.PolyVerticesEdit = L.Handler.extend({
 			p2 = map.project(marker2.getLatLng());
 
 		return map.unproject(p1._add(p2)._divideBy(2));
+	},
+
+	_onMouseMove: function (e) {
+
+		if (e.originalEvent.buttons) {
+			return;
+		}
+
+		var offset = 0.25;
+		var coords = this._polyRTree.search({
+			minX: e.latlng.lng - offset,
+			minY: e.latlng.lat - offset,
+			maxX: e.latlng.lng + offset,
+			maxY: e.latlng.lat + offset
+		});
+
+		this._markerGroup.clearLayers();
+		
+		// this.updateMarkers();
+
+		coords.forEach(function(coord) {
+			var marker = this._getMarkerFromPool(coord);
+			if (marker && !marker._map) {
+				this._markerGroup.addLayer(marker);
+			}
+		}.bind(this));
+	},
+
+	// _clearMarkerPool: function () {
+	// 	this._markers.forEach(function(marker) {
+	// 		this._poly._map.removeLayer(marker);
+	// 	}.bind(this));
+	// },
+
+	_getMarkerFromPool: function (coords) {
+
+		var existingMarker;
+		this._markers.forEach(function(marker) {
+			if (marker._map &&
+				marker._latlng.lat === coords[1] && marker._latlng.lat === coords[0])
+				existingMarker = marker;
+		});
+		if (existingMarker)
+			return existingMarker;
+
+		for (var i = 0; i < this._markers.length; i++) {
+			if (!this._markers[i]._map) {
+				this._markers[i].setLatLng([coords[1], coords[0]]);
+				return this._markers[i];
+			}
+		}
+
+	},
+
+	_buildMarkerPool: function () {
+		var poolSize = this._poly.options.markerPoolSize || 200;
+
+		if (this._markers.length >= poolSize) {
+			return;
+		}
+
+		var latlngs = this._defaultShape()
+		var marker;
+		for (var i = 0; i < poolSize; i++) {
+			marker = this._createMarker(latlngs[i], i);
+			marker.on('click', this._onMarkerClick, this);
+			marker.on('contextmenu', this._onContextMenu, this);
+			this._markers.push(marker);
+		}
+
+	},
+
+	_buildRTree: function () {
+
+		if (this._polyRTree) {
+			// TODO: Destroy and recreate?
+			return;
+		}
+
+		this._polyRTree = rbush(2, ['[0]', '[1]', '[0]', '[1]']);
+
+		var latlngs = this._defaultShape();
+		var coordinates = latlngs.map(function(latLng) {
+			return [latLng.lng, latLng.lat];
+		});
+		this._polyRTree.load(coordinates);
+
+	},
+
+	_destroyRTree: function() {
+
+		
+
 	}
 });
 
